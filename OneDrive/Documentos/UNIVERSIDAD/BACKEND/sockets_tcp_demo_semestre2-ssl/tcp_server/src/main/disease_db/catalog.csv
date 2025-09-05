@@ -1,0 +1,2 @@
+disease_id,name,severity,fasta_file
+D001,Cáncer Colon,8,FASTAS/disease001.fasta
