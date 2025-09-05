@@ -1,35 +1,35 @@
 package org.breaze;
 
-import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
 import java.util.Properties;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
-//TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
-// click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
 public class Main {
     public static void main(String[] args) {
-        Properties p = new Properties();
         try {
-            p.load(new FileInputStream(new File("configuration.properties")));
-        } catch (FileNotFoundException ex) {
-            Logger.getLogger(Main.class.getName()).log(Level.SEVERE, null, ex);
-        } catch (IOException ex) {
-            Logger.getLogger(Main.class.getName()).log(Level.SEVERE, null, ex);
-        }
-        String certificateRoute = p.getProperty("SSL_CERTIFICATE_ROUTE");
-        String certificatePassword = p.getProperty("SSL_PASSWORD");
-        System.setProperty("javax.net.ssl.keyStore",certificateRoute);
-        System.setProperty("javax.net.ssl.keyStorePassword",certificatePassword);
-        System.setProperty("javax.net.ssl.keyStoreType", "PKCS12");
-        System.setProperty("javax.net.ssl.trustStore", certificateRoute);
-        System.setProperty("javax.net.ssl.trustStorePassword", certificatePassword);
-        System.setProperty("javax.net.ssl.trustStoreType", "PKCS12");
+            // Cargar configuración desde el archivo
+            Properties p = new Properties();
+            p.load(new FileInputStream("configuration.properties"));
 
-        TCPClient client = new TCPClient("192.168.1.22", 2020);
-        client.sendMessage("Simon", "Gaviria");
+            String host = p.getProperty("SERVER_HOST", "192.168.1.22");
+            int port = Integer.parseInt(p.getProperty("SERVER_PORT", "2020"));
+            String truststore = p.getProperty("TRUSTSTORE_PATH", "truststore.jks");
+            String trustpass = p.getProperty("TRUSTSTORE_PASSWORD", "cliente123");
+
+            // Configurar truststore para SSL
+            System.setProperty("javax.net.ssl.trustStore", truststore);
+            System.setProperty("javax.net.ssl.trustStorePassword", trustpass);
+
+            // Crear cliente TCP
+            TCPClient client = new TCPClient(host, port);
+
+            // Iniciar modo interactivo: pide datos por consola y los envía
+            client.startInteractiveCreatePatient();
+
+            System.out.println("✅ Registro completado. Revisa el CSV en el servidor.");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.out.println("❌ Error al iniciar el cliente");
+        }
     }
 }
