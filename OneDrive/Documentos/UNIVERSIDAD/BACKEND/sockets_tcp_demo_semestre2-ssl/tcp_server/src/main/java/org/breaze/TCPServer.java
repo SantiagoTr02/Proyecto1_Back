@@ -36,6 +36,7 @@ public class TCPServer {
             String response = protocol.processMessage(message);
 
             dos.writeUTF(response);
+            dos.flush();
             System.out.println("📤 Sent: " + response);
 
             clientSocket.close();
