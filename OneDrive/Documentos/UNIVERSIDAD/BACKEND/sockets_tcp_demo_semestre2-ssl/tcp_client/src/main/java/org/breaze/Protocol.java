@@ -1,38 +1,56 @@
 package org.breaze;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.InputStream;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 
 public class Protocol {
-    // Construye un mensaje CREATE_PATIENT simple
-    public static String createPatientMessage(String fullName, String documentId, int age, String sex) {
-        return "CREATE_PATIENT|full_name=" + sanitize(fullName)
-                + "|document_id=" + sanitize(documentId)
-                + "|age=" + age
-                + "|sex=" + sanitize(sex);
+
+    // Escapa caracteres que podrían romper el protocolo (|, =, saltos)
+    public static String esc(String v) {
+        if (v == null) return "";
+        return v.replace("\\", "\\\\")
+                .replace("\r", " ")
+                .replace("\n", " ")
+                .replace("|", "\\|")
+                .replace("=", "\\=");
     }
 
-    // Evita caracteres que rompan el protocolo (muy simple)
-    private static String sanitize(String s) {
-        if (s == null) return "";
-        return s.replace("|", " ").replace("=","");
- }
-    public static String calculateChecksum(File file) throws Exception {
-        java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-        try (InputStream is = new FileInputStream(file)) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = is.read(buffer)) != -1) {
-                md.update(buffer, 0, read);
-            }
-        }
-        byte[] digest = md.digest();
-        StringBuilder sb = new StringBuilder();
-        for (byte b : digest) {
-            sb.append(String.format("%02x", b));
-        }
+    public static String buildCreate(Map<String, String> kv) {
+        Objects.requireNonNull(kv.get("full_name"), "full_name requerido");
+        Objects.requireNonNull(kv.get("document_id"), "document_id requerido");
+
+        StringBuilder sb = new StringBuilder("CREATE_PATIENT");
+        appendPairs(sb, kv);
         return sb.toString();
     }
 
+    public static String buildGet(String patientId) {
+        return "GET_PATIENT|patient_id=" + esc(patientId);
+    }
+
+    public static String buildUpdate(String patientId, Map<String, String> updates) {
+        StringBuilder sb = new StringBuilder("UPDATE_PATIENT|patient_id=").append(esc(patientId));
+        appendPairs(sb, updates);
+        return sb.toString();
+    }
+
+    public static String buildDeactivate(String patientId) {
+        return "DEACTIVATE_PATIENT|patient_id=" + esc(patientId);
+    }
+
+    // helper
+    private static void appendPairs(StringBuilder sb, Map<String, String> kv) {
+        for (Map.Entry<String, String> e : kv.entrySet()) {
+            String k = e.getKey();
+            String v = e.getValue();
+            if (v == null || v.isBlank()) continue; // sólo enviamos lo que tenga valor
+            sb.append("|").append(k).append("=").append(esc(v.trim()));
+        }
+    }
+
+    // Buildercito cómodo para create/update
+    public static class KV extends LinkedHashMap<String,String> {
+        public KV putv(String k, String v){ if(v!=null && !v.isBlank()) this.put(k, v); return this;}
+}
 }
