@@ -36,6 +36,8 @@ public class ServerProtocol {
 
     // Firmas: pattern -> diseaseId
     private final LinkedHashMap<String, String> signatures = new LinkedHashMap<>();
+    private final Object csvLock = new Object();
+
 
     public ServerProtocol() {
         loadCatalog();
@@ -75,21 +77,21 @@ public class ServerProtocol {
                         String sequence = readFasta(ref.toString());
                         catalog.put(diseaseId, sequence);
                     } else {
-                        System.out.println("ℹ️ Referencia no encontrada para " + diseaseId + ": " + ref.toAbsolutePath());
+                        System.out.println("ℹ Referencia no encontrada para " + diseaseId + ": " + ref.toAbsolutePath());
                     }
                 }
 
-                System.out.println("✅ Cargada enfermedad: " + diseaseName + " (" + diseaseId + "), severity=" + sev);
+                System.out.println(" Cargada enfermedad: " + diseaseName + " (" + diseaseId + "), severity=" + sev);
             }
         } catch (IOException e) {
-            System.out.println("⚠️ No pude cargar catalog.csv: " + e.getMessage());
+            System.out.println(" No pude cargar catalog.csv: " + e.getMessage());
         }
     }
 
     // === Carga firmas (normaliza patrón e ID) ===
     private void loadSignatures() {
         if (!Files.exists(SIGNATURES_CSV)) {
-            System.out.println("ℹ️ No hay signatures.csv; no se hará diagnóstico por firmas.");
+            System.out.println(" No hay signatures.csv; no se hará diagnóstico por firmas.");
             return;
         }
         try (BufferedReader br = Files.newBufferedReader(SIGNATURES_CSV, StandardCharsets.UTF_8)) {
@@ -107,11 +109,11 @@ public class ServerProtocol {
 
                 if (!pattern.isEmpty() && !diseaseId.isEmpty()) {
                     signatures.put(pattern, diseaseId);
-                    System.out.println("🧭 Firma cargada: " + pattern + " → " + diseaseId);
+                    System.out.println(" Firma cargada: " + pattern + " → " + diseaseId);
                 }
             }
         } catch (IOException e) {
-            System.out.println("⚠️ No pude cargar signatures.csv: " + e.getMessage());
+            System.out.println(" No pude cargar signatures.csv: " + e.getMessage());
         }
     }
 
@@ -130,7 +132,7 @@ public class ServerProtocol {
 
     // ======= Manejo de comandos =======
     public String processMessage(String request) {
-        System.out.println("📩 Recibido del cliente: " + request);
+        System.out.println("Recibido del cliente: " + request);
         AuditLogger.info("PROCESS_REQUEST", Map.of("msg", request));
         if (request == null || request.trim().isEmpty()) {
             AuditLogger.warn("EMPTY_REQUEST", Map.of());
@@ -178,7 +180,7 @@ public class ServerProtocol {
                 if (!fastaContent.isBlank()) {
                     cleaned = fastaContent.replaceAll("[^ACGTNacgtn]", "").toUpperCase(Locale.ROOT);
                     if (cleaned.isEmpty()) {
-                        System.out.println("⚠️ FASTA recibido pero quedó vacío tras limpieza. No se guardará archivo.");
+                        System.out.println(" FASTA recibido pero quedó vacío tras limpieza. No se guardará archivo.");
                     } else {
                         Path fastaFile = PATIENT_FASTA_DIR.resolve("patient_" + patientId + ".fasta");
                         writePatientFasta(fastaFile, patientId, cleaned);
@@ -192,7 +194,7 @@ public class ServerProtocol {
                         System.out.println("   bytes=" + fileSizeBytes + " checksum=" + checksumFasta);
                     }
                 } else {
-                    System.out.println("ℹ️ No se envió fasta_content. Se omite archivo FASTA.");
+                    System.out.println("No se envió fasta_content. Se omite archivo FASTA.");
                 }
 
                 // === Diagnóstico por firmas (TODAS las coincidencias)
@@ -327,7 +329,7 @@ public class ServerProtocol {
                             dets.add(new String[]{ dId, dName, pat });
                         }
                     } catch (IOException ioe) {
-                        System.out.println("⚠️ No pude leer detections.csv: " + ioe.getMessage());
+                        System.out.println("️ No pude leer detections.csv: " + ioe.getMessage());
                     }
                 }
 
@@ -393,9 +395,9 @@ public class ServerProtocol {
                         checksumFasta = sha256Hex(data);
                         fileSizeBytes = String.valueOf(data.length);
                         fastaPath     = fastaFile.toString();
-                        System.out.println("🧬 FASTA actualizado en: " + fastaFile.toAbsolutePath());
+                        System.out.println(" FASTA actualizado en: " + fastaFile.toAbsolutePath());
                     } else {
-                        System.out.println("⚠️ FASTA en UPDATE quedó vacío tras limpieza. No se actualizará archivo.");
+                        System.out.println(" FASTA en UPDATE quedó vacío tras limpieza. No se actualizará archivo.");
                     }
                 }
 
@@ -466,7 +468,7 @@ public class ServerProtocol {
 
             // ===== Eco por defecto =====
             AuditLogger.info("UNKNOWN_COMMAND", Map.of("cmd", command));
-            return "✅ Recibido: " + request + " | Enfermedades cargadas: " + catalog.keySet();
+            return " Recibido: " + request + " | Enfermedades cargadas: " + catalog.keySet();
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -533,9 +535,9 @@ public class ServerProtocol {
             Files.createDirectories(CSV_PATH.getParent());
             if (Files.notExists(CSV_PATH)) {
                 Files.write(CSV_PATH, Collections.singletonList(CSV_HEADER), StandardCharsets.UTF_8, StandardOpenOption.CREATE);
-                System.out.println("🗂️ CSV creado con encabezado en: " + CSV_PATH.toAbsolutePath());
+                System.out.println(" CSV creado con encabezado en: " + CSV_PATH.toAbsolutePath());
             } else {
-                System.out.println("🗂️ CSV existente: " + CSV_PATH.toAbsolutePath());
+                System.out.println(" CSV existente: " + CSV_PATH.toAbsolutePath());
             }
         } catch (IOException e) {
             throw new RuntimeException("No pude preparar el CSV en " + CSV_PATH.toAbsolutePath(), e);
@@ -547,16 +549,18 @@ public class ServerProtocol {
             Files.createDirectories(DETECTIONS_CSV.getParent());
             if (Files.notExists(DETECTIONS_CSV)) {
                 Files.write(DETECTIONS_CSV, Collections.singletonList(DETECTIONS_HEADER), StandardCharsets.UTF_8, StandardOpenOption.CREATE);
-                System.out.println("🗂️ detections.csv creado en: " + DETECTIONS_CSV.toAbsolutePath());
+                System.out.println(" detections.csv creado en: " + DETECTIONS_CSV.toAbsolutePath());
             }
         } catch (IOException e) {
             throw new RuntimeException("No pude preparar detections.csv en " + DETECTIONS_CSV.toAbsolutePath(), e);
         }
     }
 
-    private static void appendCsvLine(String line) throws IOException {
-        Files.write(CSV_PATH, Collections.singletonList(line), StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+    private void appendCsvLine(String line) throws IOException {
+        synchronized (csvLock) {
+            Files.write(CSV_PATH, Collections.singletonList(line),
+                    StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        }
     }
 
     private static void appendDetection(String detectionId, String patientId, String diseaseId, String diseaseName, String pattern) {
@@ -568,7 +572,7 @@ public class ServerProtocol {
             Files.write(DETECTIONS_CSV, Collections.singletonList(line), StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException e) {
-            System.out.println("⚠️ No pude escribir detección: " + e.getMessage());
+            System.out.println(" No pude escribir detección: " + e.getMessage());
         }
     }
 
