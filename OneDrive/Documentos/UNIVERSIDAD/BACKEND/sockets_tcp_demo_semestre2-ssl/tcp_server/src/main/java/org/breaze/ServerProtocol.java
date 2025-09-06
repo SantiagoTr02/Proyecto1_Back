@@ -117,15 +117,26 @@ public class ServerProtocol {
                 if (!sex.isEmpty() && !sex.matches("(?i)M|F")) return "ERROR;invalid_sex;expected M or F";
                 if (!age.isEmpty() && !age.matches("\\d+"))   return "ERROR;invalid_age;expected integer";
 
+                // ===== Si vino secuencia FASTA del PACIENTE, persistimos y calculamos metadata
                 if (!fastaContent.isBlank()) {
                     String cleaned = fastaContent.replaceAll("[^ACGTNacgtn]", "").toUpperCase(Locale.ROOT);
-                    Path fastaFile = PATIENT_FASTA_DIR.resolve("patient_" + patientId + ".fasta");
-                    writePatientFasta(fastaFile, patientId, cleaned);
 
-                    byte[] data = Files.readAllBytes(fastaFile);
-                    checksumFasta = sha256Hex(data);
-                    fileSizeBytes = String.valueOf(data.length);
-                    fastaPath     = fastaFile.toString();
+                    if (cleaned.isEmpty()) {
+                        System.out.println("⚠️ FASTA recibido pero quedó vacío tras limpieza. No se guardará archivo.");
+                    } else {
+                        Path fastaFile = PATIENT_FASTA_DIR.resolve("patient_" + patientId + ".fasta");
+                        writePatientFasta(fastaFile, patientId, cleaned);
+
+                        byte[] data = Files.readAllBytes(fastaFile);
+                        checksumFasta = sha256Hex(data);
+                        fileSizeBytes = String.valueOf(data.length);
+                        fastaPath     = fastaFile.toString();
+
+                        System.out.println("🧬 FASTA guardado en: " + fastaFile.toAbsolutePath());
+                        System.out.println("   bytes=" + fileSizeBytes + " checksum=" + checksumFasta);
+                    }
+                } else {
+                    System.out.println("ℹ️ No se envió fasta_content. Se omite archivo FASTA.");
                 }
 
                 List<String> row = Arrays.asList(
@@ -191,6 +202,13 @@ public class ServerProtocol {
                 String patientId = normalizePatientId(rawPid);
                 kv.remove("patient_id"); // no permitir que intenten cambiar el ID
 
+                // Verificar si el paciente está activo antes de actualizar
+                Map<String, String> current = findPatientRowById(patientId);
+                if (current == null) return "ERROR;not_found;" + patientId;
+                if ("false".equalsIgnoreCase(current.getOrDefault("active", "true"))) {
+                    return "ERROR;inactive_patient;" + patientId;
+                }
+
                 // Validaciones en campos opcionales
                 String newSex = kv.get("sex");
                 if (newSex != null && !newSex.isBlank() && !newSex.matches("(?i)M|F")) {
@@ -206,12 +224,19 @@ public class ServerProtocol {
                 String checksumFasta = null, fileSizeBytes = null, fastaPath = null;
                 if (newFastaContent != null && !newFastaContent.isBlank()) {
                     String cleaned = newFastaContent.replaceAll("[^ACGTNacgtn]", "").toUpperCase(Locale.ROOT);
-                    Path fastaFile = PATIENT_FASTA_DIR.resolve("patient_" + patientId + ".fasta");
-                    writePatientFasta(fastaFile, patientId, cleaned);
-                    byte[] data = Files.readAllBytes(fastaFile);
-                    checksumFasta = sha256Hex(data);
-                    fileSizeBytes = String.valueOf(data.length);
-                    fastaPath     = fastaFile.toString();
+                    if (cleaned.isEmpty()) {
+                        System.out.println("⚠️ FASTA en UPDATE quedó vacío tras limpieza. No se actualizará archivo.");
+                    } else {
+                        Path fastaFile = PATIENT_FASTA_DIR.resolve("patient_" + patientId + ".fasta");
+                        writePatientFasta(fastaFile, patientId, cleaned);
+                        byte[] data = Files.readAllBytes(fastaFile);
+                        checksumFasta = sha256Hex(data);
+                        fileSizeBytes = String.valueOf(data.length);
+                        fastaPath     = fastaFile.toString();
+
+                        System.out.println("🧬 FASTA actualizado en: " + fastaFile.toAbsolutePath());
+                        System.out.println("   bytes=" + fileSizeBytes + " checksum=" + checksumFasta);
+                    }
                 }
 
                 // Campos permitidos a actualizar (no tocamos patient_id ni registration_date)
@@ -219,10 +244,11 @@ public class ServerProtocol {
                         "full_name","document_id","F","contact_email","age","sex","clinical_notes","active"
                 ));
 
-                // Copiamos los valores a finales para usarlos en la lambda
+                // Copiamos a efectivamente-finales para la lambda
                 final String finalChecksum = checksumFasta;
                 final String finalFileSize = fileSizeBytes;
                 final String finalFastaPath = fastaPath;
+
                 boolean ok = updateRow(patientId, row -> {
                     for (Map.Entry<String, String> e : kv.entrySet()) {
                         String k = e.getKey();
@@ -235,11 +261,32 @@ public class ServerProtocol {
                     }
                     if (finalChecksum != null) row.put("checksum_fasta", finalChecksum);
                     if (finalFileSize != null) row.put("file_size_bytes", finalFileSize);
-                    if (finalFastaPath != null)     row.put("fasta_path", finalFileSize);
+                    if (finalFastaPath != null) row.put("fasta_path", finalFastaPath);
                 });
 
                 if (!ok) return "ERROR;not_found;" + patientId;
                 return "OK;patient_updated;" + patientId;
+            }
+
+            // ===== DEACTIVATE_PATIENT =====
+            if ("DEACTIVATE_PATIENT".equals(command)) {
+                Map<String, String> kv = parseKeyValues(Arrays.copyOfRange(parts, 1, parts.length));
+
+                String rawPid = kv.getOrDefault("patient_id", "").trim();
+                if (rawPid.isEmpty()) return "ERROR;missing_patient_id";
+                String patientId = normalizePatientId(rawPid);
+
+                Map<String, String> row = findPatientRowById(patientId);
+                if (row == null) return "ERROR;not_found;" + patientId;
+
+                if ("false".equalsIgnoreCase(row.getOrDefault("active", "true"))) {
+                    return "ERROR;already_inactive;" + patientId;
+                }
+
+                boolean ok = updateRow(patientId, r -> r.put("active", "false"));
+                if (!ok) return "ERROR;not_found;" + patientId;
+
+                return "OK;patient_deactivated;" + patientId;
             }
 
             // ===== Eco por defecto (mientras no existan otros comandos) =====
