@@ -3,7 +3,7 @@ package org.breaze;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.security.MessageDigest;              // <--- nuevo
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -27,14 +27,13 @@ public class ServerProtocol {
             "fasta_path",
             "active"
     );
+    private static final String[] HEADERS = CSV_HEADER.split(",");
 
-    // Carpeta para guardar FASTA de pacientes (mantengo tu ruta)
+    // Carpeta para guardar FASTA de pacientes
     private static final Path PATIENT_FASTA_DIR = Paths.get("src/main/disease_db/FASTAS");
 
-    // Mapa: diseaseId -> secuencia de referencia (catálogo)
+    // Catálogo: diseaseId -> secuencia y nombre
     private final Map<String, String> catalog = new HashMap<>();
-
-    // NUEVO: diseaseId -> nombre (para mostrar en GET_PATIENT)
     private final Map<String, String> diseaseNames = new HashMap<>();
 
     public ServerProtocol() {
@@ -43,7 +42,7 @@ public class ServerProtocol {
         ensureDir(PATIENT_FASTA_DIR);
     }
 
-    // === Carga catálogo (igual que tenías) ===
+    // === Carga catálogo ===
     private void loadCatalog() {
         String line;
         try (BufferedReader br = new BufferedReader(new FileReader(
@@ -59,7 +58,7 @@ public class ServerProtocol {
                 String fastaPath = "src/main/disease_db/" + fastaFile;
                 String sequence = readFasta(fastaPath);
                 catalog.put(diseaseId, sequence);
-                diseaseNames.put(diseaseId, diseaseName); // <-- NUEVO
+                diseaseNames.put(diseaseId, diseaseName);
 
                 System.out.println("✅ Cargada enfermedad: " + diseaseName + " (" + diseaseId + ")");
             }
@@ -81,7 +80,7 @@ public class ServerProtocol {
         return sequence.toString();
     }
 
-    // ======= Manejo de comandos y escritura CSV =======
+    // ======= Manejo de comandos =======
     public String processMessage(String request) {
         System.out.println("📩 Recibido del cliente: " + request);
         if (request == null || request.trim().isEmpty()) {
@@ -97,7 +96,6 @@ public class ServerProtocol {
             if ("CREATE_PATIENT".equals(command)) {
                 Map<String, String> kv = parseKeyValues(Arrays.copyOfRange(parts, 1, parts.length));
 
-                // Campos esperados
                 String patientId     = kv.getOrDefault("patient_id", genPatientId());
                 String fullName      = kv.getOrDefault("full_name", "");
                 String documentId    = kv.getOrDefault("document_id", "");
@@ -109,35 +107,27 @@ public class ServerProtocol {
                 String clinicalNotes = kv.getOrDefault("clinical_notes", "");
                 String fastaContent  = kv.getOrDefault("fasta_content", ""); // texto ACGT...
 
-                // Estos los llenamos si hay fasta_content
                 String checksumFasta = "";
                 String fileSizeBytes = "";
                 String fastaPath     = "";
 
-                // Validaciones mínimas
                 if (fullName.isEmpty() || documentId.isEmpty()) {
                     return "ERROR;missing_required_fields;need full_name and document_id";
                 }
                 if (!sex.isEmpty() && !sex.matches("(?i)M|F")) return "ERROR;invalid_sex;expected M or F";
                 if (!age.isEmpty() && !age.matches("\\d+"))   return "ERROR;invalid_age;expected integer";
 
-                // Si vino secuencia FASTA del PACIENTE, persistimos y calculamos metadata
                 if (!fastaContent.isBlank()) {
-                    // normaliza: solo letras válidas y en mayúscula
                     String cleaned = fastaContent.replaceAll("[^ACGTNacgtn]", "").toUpperCase(Locale.ROOT);
-
-                    // Archivo FASTA por paciente
                     Path fastaFile = PATIENT_FASTA_DIR.resolve("patient_" + patientId + ".fasta");
                     writePatientFasta(fastaFile, patientId, cleaned);
 
-                    // Metadata
                     byte[] data = Files.readAllBytes(fastaFile);
                     checksumFasta = sha256Hex(data);
                     fileSizeBytes = String.valueOf(data.length);
                     fastaPath     = fastaFile.toString();
                 }
 
-                // Escribimos en el CSV en el orden EXACTO requerido
                 List<String> row = Arrays.asList(
                         csv(patientId),
                         csv(fullName),
@@ -173,7 +163,6 @@ public class ServerProtocol {
                 String diseaseId   = row.getOrDefault("F", "");
                 String diseaseName = diseaseNames.getOrDefault(diseaseId, "");
 
-                // Respuesta estructurada (key=value con |)
                 String payload =
                         "patient_id=" + row.getOrDefault("patient_id","") +
                                 "|full_name=" + row.getOrDefault("full_name","") +
@@ -193,7 +182,67 @@ public class ServerProtocol {
                 return "OK;patient;" + payload;
             }
 
-            // ===== Eco por defecto para debug =====
+            // ===== UPDATE_PATIENT =====
+            if ("UPDATE_PATIENT".equals(command)) {
+                Map<String, String> kv = parseKeyValues(Arrays.copyOfRange(parts, 1, parts.length));
+
+                String rawPid = kv.getOrDefault("patient_id", "").trim();
+                if (rawPid.isEmpty()) return "ERROR;missing_patient_id";
+                String patientId = normalizePatientId(rawPid);
+                kv.remove("patient_id"); // no permitir que intenten cambiar el ID
+
+                // Validaciones en campos opcionales
+                String newSex = kv.get("sex");
+                if (newSex != null && !newSex.isBlank() && !newSex.matches("(?i)M|F")) {
+                    return "ERROR;invalid_sex;expected M or F";
+                }
+                String newAge = kv.get("age");
+                if (newAge != null && !newAge.isBlank() && !newAge.matches("\\d+")) {
+                    return "ERROR;invalid_age;expected integer";
+                }
+
+                // Si viene fasta_content en UPDATE, regeneramos .fasta y metadatos
+                String newFastaContent = kv.remove("fasta_content");
+                String checksumFasta = null, fileSizeBytes = null, fastaPath = null;
+                if (newFastaContent != null && !newFastaContent.isBlank()) {
+                    String cleaned = newFastaContent.replaceAll("[^ACGTNacgtn]", "").toUpperCase(Locale.ROOT);
+                    Path fastaFile = PATIENT_FASTA_DIR.resolve("patient_" + patientId + ".fasta");
+                    writePatientFasta(fastaFile, patientId, cleaned);
+                    byte[] data = Files.readAllBytes(fastaFile);
+                    checksumFasta = sha256Hex(data);
+                    fileSizeBytes = String.valueOf(data.length);
+                    fastaPath     = fastaFile.toString();
+                }
+
+                // Campos permitidos a actualizar (no tocamos patient_id ni registration_date)
+                Set<String> updatable = new HashSet<>(Arrays.asList(
+                        "full_name","document_id","F","contact_email","age","sex","clinical_notes","active"
+                ));
+
+                // Copiamos los valores a finales para usarlos en la lambda
+                final String finalChecksum = checksumFasta;
+                final String finalFileSize = fileSizeBytes;
+                final String finalFastaPath = fastaPath;
+                boolean ok = updateRow(patientId, row -> {
+                    for (Map.Entry<String, String> e : kv.entrySet()) {
+                        String k = e.getKey();
+                        String v = e.getValue();
+                        if (v == null || v.isBlank()) continue;
+                        if (k.equalsIgnoreCase("disease_id")) k = "F"; // alias
+                        if (updatable.contains(k)) {
+                            row.put(k, v.trim());
+                        }
+                    }
+                    if (finalChecksum != null) row.put("checksum_fasta", finalChecksum);
+                    if (finalFileSize != null) row.put("file_size_bytes", finalFileSize);
+                    if (finalFastaPath != null)     row.put("fasta_path", finalFileSize);
+                });
+
+                if (!ok) return "ERROR;not_found;" + patientId;
+                return "OK;patient_updated;" + patientId;
+            }
+
+            // ===== Eco por defecto (mientras no existan otros comandos) =====
             return "✅ Recibido: " + request + " | Enfermedades cargadas: " + catalog.keySet();
 
         } catch (Exception e) {
@@ -275,7 +324,7 @@ public class ServerProtocol {
         return sb.toString();
     }
 
-    // ===== CSV reading helpers for GET_PATIENT =====
+    // ===== CSV reading/writing helpers =====
     private Map<String, String> findPatientRowById(String patientId) {
         try (BufferedReader br = Files.newBufferedReader(CSV_PATH, StandardCharsets.UTF_8)) {
             String header = br.readLine();
@@ -291,7 +340,6 @@ public class ServerProtocol {
                 for (int i = 0; i < cols.length; i++) {
                     row.put(cols[i], unquote(vals[i]));
                 }
-
                 if (patientId.equals(row.get("patient_id"))) {
                     return row;
                 }
@@ -300,6 +348,61 @@ public class ServerProtocol {
             e.printStackTrace();
         }
         return null;
+    }
+
+    // Actualiza una fila por patientId y reescribe CSV. Devuelve true si la encontró.
+    private boolean updateRow(String patientId, java.util.function.Consumer<Map<String,String>> updater) {
+        List<Map<String,String>> all = readAllRows();
+        boolean found = false;
+        for (Map<String,String> row : all) {
+            if (patientId.equals(row.get("patient_id"))) {
+                updater.accept(row);
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+        writeAllRows(all);
+        return true;
+    }
+
+    private List<Map<String,String>> readAllRows() {
+        List<Map<String,String>> out = new ArrayList<>();
+        try (BufferedReader br = Files.newBufferedReader(CSV_PATH, StandardCharsets.UTF_8)) {
+            String header = br.readLine(); // consume header
+            if (header == null) return out;
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] vals = splitCsvSimple(line, HEADERS.length);
+                if (vals.length != HEADERS.length) continue;
+                Map<String,String> row = new HashMap<>();
+                for (int i = 0; i < HEADERS.length; i++) {
+                    row.put(HEADERS[i], unquote(vals[i]));
+                }
+                out.add(row);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return out;
+    }
+
+    private void writeAllRows(List<Map<String,String>> rows) {
+        try (BufferedWriter bw = Files.newBufferedWriter(CSV_PATH, StandardCharsets.UTF_8,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+            bw.write(CSV_HEADER);
+            bw.newLine();
+            for (Map<String,String> row : rows) {
+                List<String> ordered = new ArrayList<>(HEADERS.length);
+                for (String h : HEADERS) {
+                    ordered.add(csv(row.getOrDefault(h, "")));
+                }
+                bw.write(String.join(",", ordered));
+                bw.newLine();
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("No pude reescribir el CSV", e);
+        }
     }
 
     // Split CSV simple (maneja comillas dobles básicas)
