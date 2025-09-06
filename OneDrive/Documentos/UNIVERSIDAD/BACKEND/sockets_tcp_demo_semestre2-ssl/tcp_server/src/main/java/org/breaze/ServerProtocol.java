@@ -257,35 +257,69 @@ public class ServerProtocol {
                 String rawPid = kv.getOrDefault("patient_id", "").trim();
                 if (rawPid.isEmpty()) return "ERROR;missing_patient_id";
 
-                String patientId = normalizePatientId(rawPid);
+                String patientId = normalizePatientId(rawPid); // asegura "P-..."
 
                 Map<String, String> row = findPatientRowById(patientId);
                 if (row == null) return "ERROR;not_found;" + patientId;
 
                 String diseaseId   = row.getOrDefault("F", "");
                 String diseaseName = diseaseNames.getOrDefault(diseaseId, "");
-                if (diseaseName == null || diseaseName.isBlank()) {
-                    diseaseName = diseaseId; // fallback visible
+                if (diseaseName == null || diseaseName.isBlank()) diseaseName = diseaseId;
+
+                // payload base
+                StringBuilder payload = new StringBuilder();
+                payload.append("patient_id=").append(row.getOrDefault("patient_id",""))
+                        .append("|full_name=").append(row.getOrDefault("full_name",""))
+                        .append("|document_id=").append(row.getOrDefault("document_id",""))
+                        .append("|disease_id=").append(diseaseId)
+                        .append("|disease_name=").append(diseaseName)
+                        .append("|contact_email=").append(row.getOrDefault("contact_email",""))
+                        .append("|registration_date=").append(row.getOrDefault("registration_date",""))
+                        .append("|age=").append(row.getOrDefault("age",""))
+                        .append("|sex=").append(row.getOrDefault("sex",""))
+                        .append("|clinical_notes=").append(row.getOrDefault("clinical_notes",""))
+                        .append("|checksum_fasta=").append(row.getOrDefault("checksum_fasta",""))
+                        .append("|file_size_bytes=").append(row.getOrDefault("file_size_bytes",""))
+                        .append("|fasta_path=").append(row.getOrDefault("fasta_path",""))
+                        .append("|active=").append(row.getOrDefault("active",""));
+
+                // adjuntar detecciones
+                List<String[]> dets = new ArrayList<>(); // [disease_id, disease_name, pattern]
+                if (Files.exists(DETECTIONS_CSV)) {
+                    try (BufferedReader br = Files.newBufferedReader(DETECTIONS_CSV, StandardCharsets.UTF_8)) {
+                        String header = br.readLine(); // detection_id,patient_id,disease_id,disease_name,pattern,created_at
+                        String line;
+                        while ((line = br.readLine()) != null) {
+                            String[] vals = splitCsvSimple(line, 6);
+                            if (vals.length != 6) continue;
+                            String pid = unquote(vals[1]);
+                            if (!patientId.equals(pid)) continue;
+
+                            String dId   = unquote(vals[2]);
+                            String dName = unquote(vals[3]);
+                            String pat   = unquote(vals[4]);
+                            if (dName == null || dName.isBlank()) dName = diseaseNames.getOrDefault(dId, dId);
+                            dets.add(new String[]{ dId, dName, pat });
+                        }
+                    } catch (IOException ioe) {
+                        System.out.println("⚠️ No pude leer detections.csv: " + ioe.getMessage());
+                    }
                 }
 
-                String payload =
-                        "patient_id=" + row.getOrDefault("patient_id","") +
-                                "|full_name=" + row.getOrDefault("full_name","") +
-                                "|document_id=" + row.getOrDefault("document_id","") +
-                                "|disease_id=" + diseaseId +
-                                "|disease_name=" + diseaseName +
-                                "|contact_email=" + row.getOrDefault("contact_email","") +
-                                "|registration_date=" + row.getOrDefault("registration_date","") +
-                                "|age=" + row.getOrDefault("age","") +
-                                "|sex=" + row.getOrDefault("sex","") +
-                                "|clinical_notes=" + row.getOrDefault("clinical_notes","") +
-                                "|checksum_fasta=" + row.getOrDefault("checksum_fasta","") +
-                                "|file_size_bytes=" + row.getOrDefault("file_size_bytes","") +
-                                "|fasta_path=" + row.getOrDefault("fasta_path","") +
-                                "|active=" + row.getOrDefault("active","");
+                if (!dets.isEmpty()) {
+                    payload.append(";diagnosis_count=").append(dets.size());
+                    int idx = 1;
+                    for (String[] d : dets) {
+                        payload.append(";diagnosis_").append(idx).append("_id=").append(d[0])
+                                .append("|diagnosis_").append(idx).append("_name=").append(d[1])
+                                .append("|diagnosis_").append(idx).append("_pattern=").append(d[2]);
+                        idx++;
+                    }
+                }
 
-                return "OK;patient;" + payload;
+                return "OK;patient;" + payload.toString();
             }
+
 
             // ===== UPDATE_PATIENT ===== (bloquea inactivos)
             if ("UPDATE_PATIENT".equals(command)) {
