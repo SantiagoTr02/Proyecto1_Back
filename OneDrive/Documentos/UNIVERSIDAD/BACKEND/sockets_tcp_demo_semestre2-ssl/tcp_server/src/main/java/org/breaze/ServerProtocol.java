@@ -131,7 +131,9 @@ public class ServerProtocol {
     // ======= Manejo de comandos =======
     public String processMessage(String request) {
         System.out.println("📩 Recibido del cliente: " + request);
+        AuditLogger.info("PROCESS_REQUEST", Map.of("msg", request));
         if (request == null || request.trim().isEmpty()) {
+            AuditLogger.warn("EMPTY_REQUEST", Map.of());
             return "ERROR;empty_request";
         }
 
@@ -159,10 +161,17 @@ public class ServerProtocol {
                 String fastaPath     = "";
 
                 if (fullName.isEmpty() || documentId.isEmpty()) {
+                    AuditLogger.warn("CREATE_PATIENT_BAD_INPUT", Map.of("reason","missing_fullname_or_document"));
                     return "ERROR;missing_required_fields;need full_name and document_id";
                 }
-                if (!sex.isEmpty() && !sex.matches("(?i)M|F")) return "ERROR;invalid_sex;expected M or F";
-                if (!age.isEmpty() && !age.matches("\\d+"))   return "ERROR;invalid_age;expected integer";
+                if (!sex.isEmpty() && !sex.matches("(?i)M|F")) {
+                    AuditLogger.warn("CREATE_PATIENT_BAD_INPUT", Map.of("reason","invalid_sex", "sex", sex));
+                    return "ERROR;invalid_sex;expected M or F";
+                }
+                if (!age.isEmpty() && !age.matches("\\d+")) {
+                    AuditLogger.warn("CREATE_PATIENT_BAD_INPUT", Map.of("reason","invalid_age", "age", age));
+                    return "ERROR;invalid_age;expected integer";
+                }
 
                 // Guardar FASTA de PACIENTE (si llegó)
                 String cleaned = "";
@@ -187,8 +196,7 @@ public class ServerProtocol {
                 }
 
                 // === Diagnóstico por firmas (TODAS las coincidencias)
-                // Recorremos todas las firmas y juntamos las que estén contenidas en la secuencia
-                List<String[]> hits = new ArrayList<>(); // cada item: [diseaseId, pattern]
+                List<String[]> hits = new ArrayList<>(); // [diseaseId, pattern]
                 if (!cleaned.isEmpty() && !signatures.isEmpty()) {
                     for (Map.Entry<String, String> e : signatures.entrySet()) {
                         String pattern = e.getKey();
@@ -197,26 +205,30 @@ public class ServerProtocol {
                             hits.add(new String[]{ dId, pattern });
                         }
                     }
-                    // Ordenar por severidad descendente (más severa primero)
+                    // ordenar por severidad desc
                     hits.sort((a, b) -> {
                         int sa = diseaseSeverity.getOrDefault(a[0], 0);
                         int sb = diseaseSeverity.getOrDefault(b[0], 0);
                         return Integer.compare(sb, sa);
                     });
-
                     if (!hits.isEmpty()) {
-                        // Si el cliente NO envió disease_id, usamos la detección principal (mayor severidad)
+                        // si no vino disease_id, usar la más severa
                         if (diseaseId.isBlank()) {
                             diseaseId = hits.get(0)[0];
                         }
-                        // Registrar TODAS las detecciones
+                        // registrar TODAS
                         for (String[] hit : hits) {
                             String dId = hit[0];
                             String pat = hit[1];
                             String dName = diseaseNames.getOrDefault(dId, "");
-                            if (dName == null || dName.isBlank()) dName = dId; // fallback
+                            if (dName == null || dName.isBlank()) dName = dId;
                             appendDetection(genDetectionId(), patientId, dId, dName, pat);
                         }
+                        AuditLogger.info("CREATE_DIAG_DETECTIONS", new HashMap<String,String>() {{
+                            put("patient_id", patientId);
+                            put("count", String.valueOf(hits.size()));
+                            put("top_disease", hits.get(0)[0]);
+                        }});
                     }
                 }
 
@@ -227,6 +239,14 @@ public class ServerProtocol {
                         csv(checksumFasta), csv(fileSizeBytes), csv(fastaPath), csv("true")
                 );
                 appendCsvLine(String.join(",", row));
+
+                Map<String, String> meta = new HashMap<>();
+                meta.put("patient_id", patientId);
+                meta.put("document_id", documentId);
+                meta.put("disease_id", diseaseId);
+                meta.put("has_fasta", String.valueOf(!cleaned.isEmpty()));
+
+                AuditLogger.info("CREATE_PATIENT_OK", meta);
 
                 // Devolver también TODAS las detecciones (si las hubo)
                 String extra = "";
@@ -250,17 +270,22 @@ public class ServerProtocol {
                 return "OK;patient_created;" + patientId + extra;
             }
 
-
             // ===== GET_PATIENT =====
             if ("GET_PATIENT".equals(command)) {
                 Map<String, String> kv = parseKeyValues(Arrays.copyOfRange(parts, 1, parts.length));
                 String rawPid = kv.getOrDefault("patient_id", "").trim();
-                if (rawPid.isEmpty()) return "ERROR;missing_patient_id";
+                if (rawPid.isEmpty()) {
+                    AuditLogger.warn("GET_PATIENT_BAD_INPUT", Map.of("reason","missing_patient_id"));
+                    return "ERROR;missing_patient_id";
+                }
 
                 String patientId = normalizePatientId(rawPid); // asegura "P-..."
 
                 Map<String, String> row = findPatientRowById(patientId);
-                if (row == null) return "ERROR;not_found;" + patientId;
+                if (row == null) {
+                    AuditLogger.warn("GET_PATIENT_NOT_FOUND", Map.of("patient_id", patientId));
+                    return "ERROR;not_found;" + patientId;
+                }
 
                 String diseaseId   = row.getOrDefault("F", "");
                 String diseaseName = diseaseNames.getOrDefault(diseaseId, "");
@@ -317,31 +342,43 @@ public class ServerProtocol {
                     }
                 }
 
+                AuditLogger.info("GET_PATIENT_OK", new HashMap<String,String>() {{
+                    put("patient_id", patientId);
+                    put("diagnosis_count", String.valueOf(dets.size()));
+                }});
                 return "OK;patient;" + payload.toString();
             }
-
 
             // ===== UPDATE_PATIENT ===== (bloquea inactivos)
             if ("UPDATE_PATIENT".equals(command)) {
                 Map<String, String> kv = parseKeyValues(Arrays.copyOfRange(parts, 1, parts.length));
 
                 String rawPid = kv.getOrDefault("patient_id", "").trim();
-                if (rawPid.isEmpty()) return "ERROR;missing_patient_id";
+                if (rawPid.isEmpty()) {
+                    AuditLogger.warn("UPDATE_PATIENT_BAD_INPUT", Map.of("reason","missing_patient_id"));
+                    return "ERROR;missing_patient_id";
+                }
                 String patientId = normalizePatientId(rawPid);
                 kv.remove("patient_id");
 
                 Map<String, String> current = findPatientRowById(patientId);
-                if (current == null) return "ERROR;not_found;" + patientId;
+                if (current == null) {
+                    AuditLogger.warn("UPDATE_PATIENT_NOT_FOUND", Map.of("patient_id", patientId));
+                    return "ERROR;not_found;" + patientId;
+                }
                 if ("false".equalsIgnoreCase(current.getOrDefault("active", "true"))) {
+                    AuditLogger.warn("UPDATE_BLOCKED_INACTIVE", Map.of("patient_id", patientId));
                     return "ERROR;inactive_patient;" + patientId;
                 }
 
                 String newSex = kv.get("sex");
                 if (newSex != null && !newSex.isBlank() && !newSex.matches("(?i)M|F")) {
+                    AuditLogger.warn("UPDATE_PATIENT_BAD_INPUT", Map.of("reason","invalid_sex","sex", newSex));
                     return "ERROR;invalid_sex;expected M or F";
                 }
                 String newAge = kv.get("age");
                 if (newAge != null && !newAge.isBlank() && !newAge.matches("\\d+")) {
+                    AuditLogger.warn("UPDATE_PATIENT_BAD_INPUT", Map.of("reason","invalid_age","age", newAge));
                     return "ERROR;invalid_age;expected integer";
                 }
 
@@ -382,7 +419,16 @@ public class ServerProtocol {
                     if (finalFastaPath != null) row.put("fasta_path", finalFastaPath);
                 });
 
-                if (!ok) return "ERROR;not_found;" + patientId;
+                if (!ok) {
+                    AuditLogger.warn("UPDATE_PATIENT_NOT_FOUND", Map.of("patient_id", patientId));
+                    return "ERROR;not_found;" + patientId;
+                }
+
+                AuditLogger.info("UPDATE_PATIENT_OK", new HashMap<String,String>() {{
+                    put("patient_id", patientId);
+                    put("fields", kv.keySet().toString());
+                    put("fasta_updated", String.valueOf(finalFastaPath != null));
+                }});
                 return "OK;patient_updated;" + patientId;
             }
 
@@ -391,51 +437,54 @@ public class ServerProtocol {
                 Map<String, String> kv = parseKeyValues(Arrays.copyOfRange(parts, 1, parts.length));
 
                 String rawPid = kv.getOrDefault("patient_id", "").trim();
-                if (rawPid.isEmpty()) return "ERROR;missing_patient_id";
+                if (rawPid.isEmpty()) {
+                    AuditLogger.warn("DEACTIVATE_BAD_INPUT", Map.of("reason","missing_patient_id"));
+                    return "ERROR;missing_patient_id";
+                }
                 String patientId = normalizePatientId(rawPid);
 
                 Map<String, String> row = findPatientRowById(patientId);
-                if (row == null) return "ERROR;not_found;" + patientId;
+                if (row == null) {
+                    AuditLogger.warn("DEACTIVATE_NOT_FOUND", Map.of("patient_id", patientId));
+                    return "ERROR;not_found;" + patientId;
+                }
 
                 if ("false".equalsIgnoreCase(row.getOrDefault("active", "true"))) {
+                    AuditLogger.warn("DEACTIVATE_ALREADY_INACTIVE", Map.of("patient_id", patientId));
                     return "ERROR;already_inactive;" + patientId;
                 }
 
                 boolean ok = updateRow(patientId, r -> r.put("active", "false"));
-                if (!ok) return "ERROR;not_found;" + patientId;
+                if (!ok) {
+                    AuditLogger.warn("DEACTIVATE_NOT_FOUND", Map.of("patient_id", patientId));
+                    return "ERROR;not_found;" + patientId;
+                }
 
+                AuditLogger.info("DEACTIVATE_PATIENT_OK", Map.of("patient_id", patientId));
                 return "OK;patient_deactivated;" + patientId;
             }
 
             // ===== Eco por defecto =====
+            AuditLogger.info("UNKNOWN_COMMAND", Map.of("cmd", command));
             return "✅ Recibido: " + request + " | Enfermedades cargadas: " + catalog.keySet();
 
         } catch (Exception e) {
             e.printStackTrace();
+            AuditLogger.error("SERVER_EXCEPTION", new HashMap<String,String>() {{
+                put("type", e.getClass().getSimpleName());
+                put("msg", String.valueOf(e.getMessage()));
+            }});
             return "ERROR;exception;" + e.getClass().getSimpleName() + ";" + e.getMessage();
         }
     }
 
-    // ===== Diagnóstico por firmas =====
+    // ===== Diagnóstico por firmas: mejor coincidencia (si necesitas) =====
     private static class DetectionResult {
         final String diseaseId;
         final String pattern;
         final int severity;
         DetectionResult(String d, String p, int s) { diseaseId=d; pattern=p; severity=s; }
     }
-    // ===== Diagnóstico por firmas (múltiples) =====
-    private static class DetMatch {
-        final String diseaseId;
-        final String pattern;
-        final int severity;
-
-        DetMatch(String d, String p, int s) {
-            this.diseaseId = d;
-            this.pattern = p;
-            this.severity = s;
-        }
-    }
-
 
     private DetectionResult detectDiseaseBySignatures(String cleanedSeq) {
         DetectionResult best = null;
@@ -451,36 +500,6 @@ public class ServerProtocol {
         }
         return best;
     }
-
-    // Devuelve TODAS las enfermedades cuyos patrones aparezcan en la secuencia.
-// Si un mismo diseaseId tiene varias firmas en la secuencia, devolvemos al menos una coincidencia;
-// puedes extenderlo para acumular todas las firmas por enfermedad si quieres.
-    private List<DetMatch> detectAllDiseasesBySignatures(String cleanedSeq) {
-        List<DetMatch> matches = new ArrayList<>();
-        // Para evitar duplicados por misma enfermedad, recuerda el primero o el de mayor severidad
-        Map<String, DetMatch> bestPerDisease = new HashMap<>();
-
-        for (Map.Entry<String, String> e : signatures.entrySet()) {
-            String pattern = e.getKey();
-            String dId = e.getValue();
-            if (cleanedSeq.contains(pattern)) {
-                int sev = diseaseSeverity.getOrDefault(dId, 0);
-                DetMatch candidate = new DetMatch(dId, pattern, sev);
-
-                // Conserva la coincidencia de MAYOR severidad por enfermedad (o la primera, si prefieres)
-                DetMatch existing = bestPerDisease.get(dId);
-                if (existing == null || candidate.severity > existing.severity) {
-                    bestPerDisease.put(dId, candidate);
-                }
-            }
-        }
-        matches.addAll(bestPerDisease.values());
-
-        // Ordena desc por severidad (la más severa primera)
-        matches.sort((a, b) -> Integer.compare(b.severity, a.severity));
-        return matches;
-    }
-
 
     // ===== CSV utils =====
     private static Map<String, String> parseKeyValues(String[] arr) {
