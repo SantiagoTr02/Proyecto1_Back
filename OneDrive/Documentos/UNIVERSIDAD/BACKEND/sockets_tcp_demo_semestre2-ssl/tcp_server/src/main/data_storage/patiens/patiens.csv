@@ -1,3 +1,5 @@
 patient_id,full_name,document_id,F,contact_email,registration_date,age,sex,clinical_notes,checksum_fasta,file_size_bytes,fasta_path,active
 P-1757046169982,Juan Perez,CC12345,,,2025-09-04T23:22:50.0189577,30,M,,,,,true
 P-1757048992953,luis,12,2,defe,2025-09-05T00:09:52.9700521,12,M,teiopktge,,,,true
+P-1757116722971,luis,1231241,DD001,gikg,2025-09-05T18:58:42.9728337,12,M,hola,,,,true
+P-1757117557727,luis,123134,DD01,ierjifje,2025-09-05T19:12:37.7410153,12,M,SE ESTA MRUEINDP,23503b052711b4a959c6baca83d8151ce8600e531034ee3bc3f789c6f560de26,38,src\main\disease_db\FASTAS\patient_P-1757117557727.fasta,true
