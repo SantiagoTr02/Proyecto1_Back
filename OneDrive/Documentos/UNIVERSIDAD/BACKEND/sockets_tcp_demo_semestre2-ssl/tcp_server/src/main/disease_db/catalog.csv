@@ -1,2 +1,3 @@
 disease_id,name,severity,fasta_file
 D001,Cáncer Colon,8,FASTAS/disease001.fasta
+D002, Covid,7,FASTAS/disease001.fasta

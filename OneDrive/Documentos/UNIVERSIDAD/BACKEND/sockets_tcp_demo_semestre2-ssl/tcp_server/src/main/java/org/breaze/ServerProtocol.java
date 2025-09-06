@@ -28,11 +28,14 @@ public class ServerProtocol {
             "active"
     );
 
-    // Carpeta para guardar FASTA de pacientes
+    // Carpeta para guardar FASTA de pacientes (mantengo tu ruta)
     private static final Path PATIENT_FASTA_DIR = Paths.get("src/main/disease_db/FASTAS");
 
     // Mapa: diseaseId -> secuencia de referencia (catálogo)
     private final Map<String, String> catalog = new HashMap<>();
+
+    // NUEVO: diseaseId -> nombre (para mostrar en GET_PATIENT)
+    private final Map<String, String> diseaseNames = new HashMap<>();
 
     public ServerProtocol() {
         loadCatalog();
@@ -56,6 +59,7 @@ public class ServerProtocol {
                 String fastaPath = "src/main/disease_db/" + fastaFile;
                 String sequence = readFasta(fastaPath);
                 catalog.put(diseaseId, sequence);
+                diseaseNames.put(diseaseId, diseaseName); // <-- NUEVO
 
                 System.out.println("✅ Cargada enfermedad: " + diseaseName + " (" + diseaseId + ")");
             }
@@ -85,10 +89,11 @@ public class ServerProtocol {
         }
 
         try {
-            // Formato: CREATE_PATIENT|key=value|key=value|...
+            // Formato: COMMAND|key=value|key=value|...
             String[] parts = request.split("\\|");
             String command = parts[0].trim().toUpperCase(Locale.ROOT);
 
+            // ===== CREATE_PATIENT =====
             if ("CREATE_PATIENT".equals(command)) {
                 Map<String, String> kv = parseKeyValues(Arrays.copyOfRange(parts, 1, parts.length));
 
@@ -102,7 +107,7 @@ public class ServerProtocol {
                 String age           = kv.getOrDefault("age", "");
                 String sex           = kv.getOrDefault("sex", "");
                 String clinicalNotes = kv.getOrDefault("clinical_notes", "");
-                String fastaContent  = kv.getOrDefault("fasta_content", ""); // <--- NUEVO (texto ACGT...)
+                String fastaContent  = kv.getOrDefault("fasta_content", ""); // texto ACGT...
 
                 // Estos los llenamos si hay fasta_content
                 String checksumFasta = "";
@@ -154,7 +159,41 @@ public class ServerProtocol {
                 return "OK;patient_created;" + patientId;
             }
 
-            // Eco por defecto para debug
+            // ===== GET_PATIENT =====
+            if ("GET_PATIENT".equals(command)) {
+                Map<String, String> kv = parseKeyValues(Arrays.copyOfRange(parts, 1, parts.length));
+                String rawPid = kv.getOrDefault("patient_id", "").trim();
+                if (rawPid.isEmpty()) return "ERROR;missing_patient_id";
+
+                String patientId = normalizePatientId(rawPid);
+
+                Map<String, String> row = findPatientRowById(patientId);
+                if (row == null) return "ERROR;not_found;" + patientId;
+
+                String diseaseId   = row.getOrDefault("F", "");
+                String diseaseName = diseaseNames.getOrDefault(diseaseId, "");
+
+                // Respuesta estructurada (key=value con |)
+                String payload =
+                        "patient_id=" + row.getOrDefault("patient_id","") +
+                                "|full_name=" + row.getOrDefault("full_name","") +
+                                "|document_id=" + row.getOrDefault("document_id","") +
+                                "|disease_id=" + diseaseId +
+                                "|disease_name=" + diseaseName +
+                                "|contact_email=" + row.getOrDefault("contact_email","") +
+                                "|registration_date=" + row.getOrDefault("registration_date","") +
+                                "|age=" + row.getOrDefault("age","") +
+                                "|sex=" + row.getOrDefault("sex","") +
+                                "|clinical_notes=" + row.getOrDefault("clinical_notes","") +
+                                "|checksum_fasta=" + row.getOrDefault("checksum_fasta","") +
+                                "|file_size_bytes=" + row.getOrDefault("file_size_bytes","") +
+                                "|fasta_path=" + row.getOrDefault("fasta_path","") +
+                                "|active=" + row.getOrDefault("active","");
+
+                return "OK;patient;" + payload;
+            }
+
+            // ===== Eco por defecto para debug =====
             return "✅ Recibido: " + request + " | Enfermedades cargadas: " + catalog.keySet();
 
         } catch (Exception e) {
@@ -179,6 +218,10 @@ public class ServerProtocol {
 
     private static String genPatientId() {
         return "P-" + System.currentTimeMillis();
+    }
+
+    private static String normalizePatientId(String raw) {
+        return raw.startsWith("P-") ? raw : ("P-" + raw);
     }
 
     private static String csv(String val) {
@@ -230,5 +273,62 @@ public class ServerProtocol {
         StringBuilder sb = new StringBuilder();
         for (byte b : d) sb.append(String.format("%02x", b));
         return sb.toString();
+    }
+
+    // ===== CSV reading helpers for GET_PATIENT =====
+    private Map<String, String> findPatientRowById(String patientId) {
+        try (BufferedReader br = Files.newBufferedReader(CSV_PATH, StandardCharsets.UTF_8)) {
+            String header = br.readLine();
+            if (header == null) return null;
+
+            String[] cols = header.split(",");
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] vals = splitCsvSimple(line, cols.length);
+                if (vals.length != cols.length) continue;
+
+                Map<String,String> row = new HashMap<>();
+                for (int i = 0; i < cols.length; i++) {
+                    row.put(cols[i], unquote(vals[i]));
+                }
+
+                if (patientId.equals(row.get("patient_id"))) {
+                    return row;
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    // Split CSV simple (maneja comillas dobles básicas)
+    private static String[] splitCsvSimple(String line, int expectedCols) {
+        List<String> out = new ArrayList<>(expectedCols);
+        StringBuilder cur = new StringBuilder();
+        boolean inQuotes = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '"') {
+                inQuotes = !inQuotes;
+                cur.append(c);
+            } else if (c == ',' && !inQuotes) {
+                out.add(cur.toString());
+                cur.setLength(0);
+            } else {
+                cur.append(c);
+            }
+        }
+        out.add(cur.toString());
+        return out.toArray(new String[0]);
+    }
+
+    private static String unquote(String s) {
+        if (s == null) return "";
+        s = s.trim();
+        if (s.startsWith("\"") && s.endsWith("\"") && s.length() >= 2) {
+            s = s.substring(1, s.length()-1).replace("\"\"", "\"");
+        }
+        return s;
     }
 }
