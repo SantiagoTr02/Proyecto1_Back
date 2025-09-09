@@ -1,0 +1,6 @@
+tcp_client/.idea/vcs.xml
+tcp_client/configuration.properties
+tcp_server/.idea/vcs.xml
+tcp_server/configuration.properties
+tcp_client/mykeystore.p12
+tcp_server/mykeystore.p12
