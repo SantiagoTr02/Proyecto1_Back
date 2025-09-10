@@ -1,0 +1,11 @@
+disease_id,name,severity,fasta_file
+D001,Cáncer Colon,8,
+D002,Covid,7,
+D003,Hepatitis B,6,
+D004,Dengue,5,
+D005,Zika,5,
+D006,Ébola,9,
+D007,Influenza,6,
+D008,Chikungunya,5,
+D009,Tuberculosis,8,
+D010,Sarampión,7,
